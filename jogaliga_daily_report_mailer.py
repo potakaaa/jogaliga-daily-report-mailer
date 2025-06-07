@@ -1,5 +1,4 @@
 import yagmail, datetime, os, dotenv
-from typing import List, Union
 
 
 class DailyReportMailer:
@@ -12,11 +11,11 @@ class DailyReportMailer:
         self.developer = []
         
         if repo == "frontend":
-            self.developer.append("Gerald Helbiro Jr.")
-            self.developer.append("Mark Tristan Fabellar")
+            self.developer.append(os.getenv("DEV1_NAME_FRONTEND"))
+            self.developer.append(os.getenv("DEV2_NAME_FRONTEND"))
         elif repo == "backend":
-            self.developer.append("Gerald Helbiro Jr.")
-            self.developer.append("Hans Del Mundo")
+            self.developer.append(os.getenv("DEV1_NAME_BACKEND"))
+            self.developer.append(os.getenv("DEV2_NAME_BACKEND"))
         else:
             raise ValueError("Invalid repo")
 
@@ -87,8 +86,8 @@ def main():
 
     MOCK_MODE = True
 
-    sender = "helbirog@gmail.com"
-    receiver = ["rhelbiro@gmail.com"]
+    sender = os.getenv("SENDER_EMAIL")
+    receiver = [os.getenv("RECEIVER_EMAIL")]
     app_password = os.getenv("GMAIL_APP_PASSWORD")
 
     isValidRepo = False
@@ -98,11 +97,11 @@ def main():
             if repo == "1":
                 repo = "frontend"
                 if not MOCK_MODE:
-                    receiver.append("marktristanfabellar.pro@gmail.com")
+                    receiver.append(os.getenv("MARK_EMAIL"))
             elif repo == "2":
                 repo = "backend"
                 if not MOCK_MODE:
-                    receiver.append("hansdelmundo2005@gmail.com")
+                    receiver.append(os.getenv("HANS_EMAIL"))
             else:
                 raise ValueError("Invalid repo")
             isValidRepo = True
