@@ -84,10 +84,15 @@ def main():
 
     dotenv.load_dotenv()
 
-    MOCK_MODE = True
+    MOCK_MODE = os.getenv("MOCK_MODE")
+
+    if MOCK_MODE == "False":
+        print("Mock mode is disabled")
+    else:
+        print("Mock mode is enabled")
 
     sender = os.getenv("SENDER_EMAIL")
-    receiver = [os.getenv("RECEIVER_EMAIL")]
+    receiver = [os.getenv("RECEIVER_EMAIL") if MOCK_MODE == "False" else "rhelbiro@gmail.com"]
     app_password = os.getenv("GMAIL_APP_PASSWORD")
 
     isValidRepo = False
@@ -96,11 +101,11 @@ def main():
             repo = input("Enter the repo[1: Frontend, 2: Backend]: ").lower()
             if repo == "1":
                 repo = "frontend"
-                if not MOCK_MODE:
+                if MOCK_MODE == "False":
                     receiver.append(os.getenv("MARK_EMAIL"))
             elif repo == "2":
                 repo = "backend"
-                if not MOCK_MODE:
+                if MOCK_MODE == "False":
                     receiver.append(os.getenv("HANS_EMAIL"))
             else:
                 raise ValueError("Invalid repo")
@@ -113,39 +118,37 @@ def main():
 
     # Example usage:
     dev1_accomplishments = """
-    Fixed Docker Compose configuration mismatches and updated gitignore for project knowledge files
-    Implemented dedicated idempotency service for secure PIX transfer operations
-    Fixed PIX transfer endpoints to properly utilize idempotency service
-    """
-
-    """
-    Frontend
     Fixed incorrect height calculation on player profile screen
     Refactored login screens for dark mode compatibility
     Added informational text after headings on register and login screens for better UX consistency
     Refactored player dashboard for dark theme compatibility
-    
-    """
-
-    dev2_accomplishments ="""
-    
-    """
-
-    dev1_plans = """
-    Continue fixing PIX transfer issues
-    Continue working on idempotency service
-    Continue working on PIX transfer endpoints
     """
 
     """
     Frontend
+    
+    
+    """
+
+    dev2_accomplishments ="""
+    Merged the development environment into the feature/team-manager-profile branch to ensure the team manager screens are in sync with the latest changes.
+    Completed the Team Manager - Roll Call screen.
+    Attempted backend testing but encountered issues.
+    """
+
+    dev1_plans = """
     Implement temporary buttons  for Team manager screens on sidebar
     Fix existing conflicts and clean up PR queue
     Fix the issue with the player dashboard screen (language and bottom bar overflow)
     """
 
-    dev2_plans = """
+    """
+    Frontend
     
+    """
+
+    dev2_plans = """
+    Work on improving the app theme,  to allow easier switching between themes.
     """
 
     dev1_blockers = """
