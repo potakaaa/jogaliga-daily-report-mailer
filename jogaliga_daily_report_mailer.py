@@ -10,12 +10,12 @@ class DailyReportMailer:
         self.today = datetime.date.today().strftime('%B %d, %Y')
         self.developer = []
         
+        # Frontend has only one developer (Gerald). Backend has two developers (Gerald & Hans).
         if repo == "frontend":
-            self.developer.append(os.getenv("DEV1_NAME_FRONTEND"))
-            self.developer.append(os.getenv("DEV2_NAME_FRONTEND"))
+            self.developer.append(os.getenv("DEV1_NAME_FRONTEND"))  # Gerald
         elif repo == "backend":
-            self.developer.append(os.getenv("DEV1_NAME_BACKEND"))
-            self.developer.append(os.getenv("DEV2_NAME_BACKEND"))
+            self.developer.append(os.getenv("DEV1_NAME_BACKEND"))  # Gerald
+            self.developer.append(os.getenv("DEV2_NAME_BACKEND"))  # Hans
         else:
             raise ValueError("Invalid repo")
 
@@ -45,30 +45,56 @@ class DailyReportMailer:
         dev2_note = self.format_bullet_points(dev2_notes) if dev2_notes else "None"
         
         
-        # Ultra-compact single table with no spacing issues
+        # Dynamically build HTML sections based on the number of developers
+        dev_data = [
+            {
+                "name": self.developer[0],
+                "acc": dev1_acc,
+                "plan": dev1_plan,
+                "block": dev1_block,
+                "note": dev1_note,
+            }
+        ]
+
+        # Include second developer only if present (backend)
+        if len(self.developer) > 1:
+            dev_data.append(
+                {
+                    "name": self.developer[1],
+                    "acc": dev2_acc,
+                    "plan": dev2_plan,
+                    "block": dev2_block,
+                    "note": dev2_note,
+                }
+            )
+
+        def build_section(title: str, key: str) -> str:
+            """Return an HTML section for the given title and key."""
+            html = (
+                f'<h2 style="color:#27a25a;font-size:25px;margin:0 0 3px 0;padding:0;">{title}</h2>'
+            )
+            for item in dev_data:
+                html += (
+                    f'<p style="margin:0 0 5px 0;font-size:18px"><b>{item["name"]}:</b></p>'
+                )
+                html += (
+                    f'<p style="margin:0 0 10px 20px;font-size:16px">{item[key]}</p>'
+                )
+            return html
+
+        accomplishments_html = build_section("Today's Accomplishments", "acc")
+        plans_html = build_section("Tomorrow's Plan", "plan")
+        blockers_html = build_section("Blockers & Questions", "block")
+        notes_html = build_section("Notes", "note")
+
+        # Assemble the whole email body
         body = f'''<table width="600" cellpadding="0" cellspacing="0" border="0" style="font-family:Arial,sans-serif;margin:0;padding:0;">
-<tr><td bgcolor="#27a25a" style="color:#fff;padding:30px;border-radius:15px"><h1 style="margin:0;font-size:30px;">Jogaliga {self.repo.capitalize()} Daily Report</h1><p style="margin:10px 0 0 0;font-size:18px"><b>Developer:</b> {self.developer[0]}, {self.developer[1]}<br><b>Date:</b> {self.today}</p></td></tr>
+<tr><td bgcolor="#27a25a" style="color:#fff;padding:30px;border-radius:15px"><h1 style="margin:0;font-size:30px;">Jogaliga {self.repo.capitalize()} Daily Report</h1><p style="margin:10px 0 0 0;font-size:18px"><b>Developer{'s' if len(self.developer) > 1 else ''}:</b> {', '.join(self.developer)}<br><b>Date:</b> {self.today}</p></td></tr>
 <tr><td bgcolor="#ffffff" style="padding:10px;">
-<h2 style="color:#27a25a;font-size:25px;margin:0 0 3px 0;padding:0;">Today's Accomplishments</h2>
-<p style="margin:0 0 5px 0;font-size:18px"><b>{self.developer[0]}:</b></p>
-<p style="margin:0 0 10px 20px;font-size:16px">{dev1_acc}</p>
-<p style="margin:0 0 5px 0;font-size:18px"><b>{self.developer[1]}:</b></p>
-<p style="margin:0 0 15px 20px;font-size:16px">{dev2_acc}</p>
-<h2 style="color:#27a25a;font-size:25px;margin:0 0 3px 0;padding:0;">Tomorrow's Plan</h2>
-<p style="margin:0 0 5px 0;font-size:18px"><b>{self.developer[0]}:</b></p>
-<p style="margin:0 0 10px 20px;font-size:16px">{dev1_plan}</p>
-<p style="margin:0 0 5px 0;font-size:18px"><b>{self.developer[1]}:</b></p>
-<p style="margin:0 0 15px 20px;font-size:16px">{dev2_plan}</p>
-<h2 style="color:#27a25a;font-size:25px;margin:0 0 3px 0;padding:0;">Blockers & Questions</h2>
-<p style="margin:0 0 5px 0;font-size:18px"><b>{self.developer[0]}:</b></p>
-<p style="margin:0 0 10px 20px;font-size:16px">{dev1_block}</p>
-<p style="margin:0 0 5px 0;font-size:18px"><b>{self.developer[1]}:</b></p>
-<p style="margin:0 0 15px 20px;font-size:16px">{dev2_block}</p>
-<h2 style="color:#27a25a;font-size:25px;margin:0 0 3px 0;padding:0;">Notes</h2>
-<p style="margin:0 0 5px 0;font-size:18px"><b>{self.developer[0]}:</b></p>
-<p style="margin:0 0 10px 20px;font-size:16px">{dev1_note}</p>
-<p style="margin:0 0 5px 0;font-size:18px"><b>{self.developer[1]}:</b></p>
-<p style="margin:0 0 0 20px;font-size:16px">{dev2_note}</p>
+{accomplishments_html}
+{plans_html}
+{blockers_html}
+{notes_html}
 </td></tr>
 <tr><td bgcolor="#f9fafb" style="padding:15px;text-align:center;font-size:12px;color:#666;">This is an automated report generated by the Jogaliga {self.repo.capitalize()} team</td></tr>
 </table>'''
@@ -100,9 +126,7 @@ def main():
         try:
             repo = input("Enter the repo[1: Frontend, 2: Backend]: ").lower()
             if repo == "1":
-                repo = "frontend"
-                if MOCK_MODE == "False":
-                    receiver.append(os.getenv("MARK_EMAIL"))
+                repo = "frontend"  # No additional recipient for frontend
             elif repo == "2":
                 repo = "backend"
                 if MOCK_MODE == "False":
@@ -118,28 +142,30 @@ def main():
 
     # Example usage:
     dev1_accomplishments = """
-    Fixed incorrect height calculation on player profile screen
-    Refactored login screens for dark mode compatibility
-    Added informational text after headings on register and login screens for better UX consistency
-    Refactored player dashboard for dark theme compatibility
+    Purged legacy star-rating implementation
+    Refreshed OpenAPI export and added rating-flow section
+    Hardened Rating feature tests and CI pipeline
+    Added badge-skill aggregator and hooked into RatingService
+    Updated TeamBalancer to use aggregated skill and greedy pairing algorithm
     """
 
     """
     Frontend
-    
+    Refactored all player profile implementation to use consistent player profile edit naming
+    Added E2E tests for multi-role user flows
+    Removed duplicate imports and unified provider aliases in player-role
+    Addressed role management code quality improvements and created GitHub issues for fixes
     
     """
 
     dev2_accomplishments ="""
-    Merged the development environment into the feature/team-manager-profile branch to ensure the team manager screens are in sync with the latest changes.
-    Completed the Team Manager - Roll Call screen.
-    Attempted backend testing but encountered issues.
+    Removed certain tests for now, to be refactored for consistent coverage
+    Submitted PR but closed for various issues
     """
 
     dev1_plans = """
-    Implement temporary buttons  for Team manager screens on sidebar
-    Fix existing conflicts and clean up PR queue
-    Fix the issue with the player dashboard screen (language and bottom bar overflow)
+    Continue fixing current AI implementation to align with badge-based rating system
+    Thorough testing of AI implementation
     """
 
     """
@@ -148,7 +174,7 @@ def main():
     """
 
     dev2_plans = """
-    Work on improving the app theme,  to allow easier switching between themes.
+    Apply fixes to PR to finalize submission
     """
 
     dev1_blockers = """
