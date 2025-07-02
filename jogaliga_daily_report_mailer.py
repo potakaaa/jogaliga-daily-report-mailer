@@ -142,11 +142,10 @@ def main():
 
     # Example usage:
     dev1_accomplishments = """
-    Purged legacy star-rating implementation
-    Refreshed OpenAPI export and added rating-flow section
-    Hardened Rating feature tests and CI pipeline
-    Added badge-skill aggregator and hooked into RatingService
-    Updated TeamBalancer to use aggregated skill and greedy pairing algorithm
+    Refactored all player profile implementation to use consistent player profile edit naming
+    Added E2E tests for multi-role user flows
+    Removed duplicate imports and unified provider aliases in player-role
+    Addressed role management code quality improvements and created GitHub issues for fixes
     """
 
     """
@@ -164,8 +163,8 @@ def main():
     """
 
     dev1_plans = """
-    Continue fixing current AI implementation to align with badge-based rating system
-    Thorough testing of AI implementation
+    Update documentation on multi role management/request implementation
+    Create standardized API error handling across codebase and apply to current implementation
     """
 
     """
