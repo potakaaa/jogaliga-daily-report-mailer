@@ -1,4 +1,9 @@
 import yagmail, datetime, os, dotenv
+import gspread
+from google.oauth2.service_account import Credentials
+from collections import defaultdict
+
+SPREADSHEET_ID = '1wjbi6vxm2dZMHG2xvLCsTJW3rTJ206y2tXIAMHvam0M'
 
 
 class DailyReportMailer:
@@ -10,9 +15,10 @@ class DailyReportMailer:
         self.today = datetime.date.today().strftime('%B %d, %Y')
         self.developer = []
         
-        # Frontend has only one developer (Gerald). Backend has two developers (Gerald & Hans).
+        # Frontend has two developers (Gerald & Jesreal). Backend has two developers (Gerald & Hans).
         if repo == "frontend":
             self.developer.append(os.getenv("DEV1_NAME_FRONTEND"))  # Gerald
+            self.developer.append(os.getenv("DEV2_NAME_FRONTEND"))  # Jesreal
         elif repo == "backend":
             self.developer.append(os.getenv("DEV1_NAME_BACKEND"))  # Gerald
             self.developer.append(os.getenv("DEV2_NAME_BACKEND"))  # Hans
@@ -20,18 +26,19 @@ class DailyReportMailer:
             raise ValueError("Invalid repo")
 
     def format_bullet_points(self, text: str) -> str:
-        """Convert a block of text into HTML bullet points."""
-        # Split the text into lines and filter out empty lines
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
-        # Convert each line into a bullet point
-        bullet_points = [f"• {line}" for line in lines]
+        """Convert a block of text into HTML bullet points, splitting by commas."""
+        # Split the text into items by comma and filter out empty items
+        items = [item.strip() for item in text.split(',') if item.strip()]
+        # Convert each item into a bullet point with capitalized first letter
+        bullet_points = [f"• {item.capitalize()}" for item in items]
         # Join with line breaks
         return "<br>".join(bullet_points)
 
     def send_report(self, dev1_accomplishments: str = "", dev2_accomplishments: str = "",
                    dev1_plans: str = "", dev2_plans: str = "",
                    dev1_blockers: str = "", dev2_blockers: str = "",
-                   dev1_notes: str = "", dev2_notes: str = ""):
+                   dev1_notes: str = "", dev2_notes: str = "",
+                   attachments: list = None):
         subject = f"DAILY REPORT FOR JOGALIGA {self.repo.upper()} [{self.today.upper()}]"
         
         # Format all the text inputs into bullet points
@@ -53,20 +60,15 @@ class DailyReportMailer:
                 "plan": dev1_plan,
                 "block": dev1_block,
                 "note": dev1_note,
+            },
+            {
+                "name": self.developer[1],
+                "acc": dev2_acc,
+                "plan": dev2_plan,
+                "block": dev2_block,
+                "note": dev2_note,
             }
         ]
-
-        # Include second developer only if present (backend)
-        if len(self.developer) > 1:
-            dev_data.append(
-                {
-                    "name": self.developer[1],
-                    "acc": dev2_acc,
-                    "plan": dev2_plan,
-                    "block": dev2_block,
-                    "note": dev2_note,
-                }
-            )
 
         def build_section(title: str, key: str) -> str:
             """Return an HTML section for the given title and key."""
@@ -100,100 +102,128 @@ class DailyReportMailer:
 </table>'''
 
         yag = yagmail.SMTP(self.sender, self.app_password)
-        yag.send(self.receiver, subject, [body])
+        # Prepare the email contents
+        contents = [body]
+        if attachments:
+            contents.extend(attachments)
+        yag.send(self.receiver, subject, contents)
         print("Daily report sent successfully")
 
 
 
 
+def fetch_todays_reports(creds_path):
+    SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+    creds = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(SPREADSHEET_ID)
+    worksheet = sh.sheet1  # Assumes first sheet is correct
+    records = worksheet.get_all_records()
+    today = datetime.date.today()
+    todays_responses = []
+    for row in records:
+        ts = str(row['Timestamp'])
+        try:
+            # Try parsing as MM/DD/YYYY HH:MM:SS
+            date_part = ts.split(' ')[0]
+            month, day, year = map(int, date_part.split('/'))
+            row_date = datetime.date(year, month, day)
+            if row_date == today:
+                todays_responses.append(row)
+        except Exception as e:
+            continue  # Skip rows with invalid date
+    return todays_responses
+
+
+def group_reports_by_repo_and_developer(responses, expected_devs):
+    grouped = defaultdict(dict)
+    for row in responses:
+        # Normalize repo/position
+        position = row['Position'].strip().lower()
+        if 'frontend' in position:
+            repo = 'frontend'
+        elif 'backend' in position:
+            repo = 'backend'
+        else:
+            continue  # skip unknown positions
+        dev = row['Developer Name'].strip()
+        grouped[repo][dev] = {
+            'accomplishments': str(row.get("Accomplishment Today (separate items with commas)", "None")),
+            'plans': str(row.get("Tomorrow's Plans (separate items with commas)", "None")),
+            'blockers': str(row.get("Blockers/Questions (separate items with commas)", "None")),
+            'notes': str(row.get("Notes (separate items with commas)", "None"))
+        }
+    # Fill missing devs with 'None'
+    for repo, devs in expected_devs.items():
+        for dev in devs:
+            if dev not in grouped[repo]:
+                grouped[repo][dev] = {
+                    'accomplishments': 'None',
+                    'plans': 'None',
+                    'blockers': 'None',
+                    'notes': 'None'
+                }
+    return grouped
+
+
 def main():
 
     dotenv.load_dotenv()
-
-    MOCK_MODE = os.getenv("MOCK_MODE")
-
-    if MOCK_MODE == "False":
-        print("Mock mode is disabled")
-    else:
-        print("Mock mode is enabled")
-
+    
+    CREDS_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "jogaliga-daily-report-652c86c83d3f.json")
+    MOCK_MODE = os.getenv("MOCK_MODE", "True")
+    
     sender = os.getenv("SENDER_EMAIL")
-    receiver = [os.getenv("RECEIVER_EMAIL") if MOCK_MODE == "False" else "rhelbiro@gmail.com"]
     app_password = os.getenv("GMAIL_APP_PASSWORD")
+    # Receivers for each repo
+    frontend_receivers = [os.getenv("RECEIVER_EMAIL")]
+    backend_receivers = [os.getenv("RECEIVER_EMAIL")]
+    if os.getenv("JESREAL_EMAIL"):
+        frontend_receivers.append(os.getenv("JESREAL_EMAIL"))
+    if os.getenv("HANS_EMAIL"):
+        backend_receivers.append(os.getenv("HANS_EMAIL"))
+    # For mock mode, override receivers
+    test_email = "rhelbiro@gmail.com"
+    if MOCK_MODE != "False":
+        frontend_receivers = [test_email]
+        backend_receivers = [test_email]
+        print("Mock mode is enabled")
+    else:
+        print("Mock mode is disabled")
 
-    isValidRepo = False
-    while not isValidRepo:
-        try:
-            repo = input("Enter the repo[1: Frontend, 2: Backend]: ").lower()
-            if repo == "1":
-                repo = "frontend"  # No additional recipient for frontend
-            elif repo == "2":
-                repo = "backend"
-                if MOCK_MODE == "False":
-                    receiver.append(os.getenv("HANS_EMAIL"))
-            else:
-                raise ValueError("Invalid repo")
-            isValidRepo = True
-        except ValueError as e:
-            print(e)
-            isValidRepo = False
+    # Define expected developers for each repo
+    expected_devs = {
+        'frontend': [os.getenv("DEV1_NAME_FRONTEND", "Gerald"), os.getenv("DEV2_NAME_FRONTEND", "Jesreal")],
+        'backend': [os.getenv("DEV1_NAME_BACKEND", "Gerald"), os.getenv("DEV2_NAME_BACKEND", "Hans")],
+    }
 
-    mailer = DailyReportMailer(repo, sender, receiver, app_password)
+    # Fetch today's responses
+    responses = fetch_todays_reports(CREDS_PATH)
+    grouped = group_reports_by_repo_and_developer(responses, expected_devs)
 
-    # Example usage:
-    dev1_accomplishments = """
-    Refactored all player profile implementation to use consistent player profile edit naming
-    Added E2E tests for multi-role user flows
-    Removed duplicate imports and unified provider aliases in player-role
-    Addressed role management code quality improvements and created GitHub issues for fixes
-    """
-
-    """
-    Frontend
-    Refactored all player profile implementation to use consistent player profile edit naming
-    Added E2E tests for multi-role user flows
-    Removed duplicate imports and unified provider aliases in player-role
-    Addressed role management code quality improvements and created GitHub issues for fixes
-    
-    """
-
-    dev2_accomplishments ="""
-    Removed certain tests for now, to be refactored for consistent coverage
-    Submitted PR but closed for various issues
-    """
-
-    dev1_plans = """
-    Update documentation on multi role management/request implementation
-    Create standardized API error handling across codebase and apply to current implementation
-    """
-
-    """
-    Frontend
-    
-    """
-
-    dev2_plans = """
-    Apply fixes to PR to finalize submission
-    """
-
-    dev1_blockers = """
-    None
-    """
-
-    dev2_blockers = """
-    None
-    """
-
-    dev1_notes = """
-    None
-    """
-
-    dev2_notes = """
-    None
-    """
-
-    mailer.send_report(dev1_accomplishments=dev1_accomplishments, dev2_accomplishments=dev2_accomplishments, dev1_plans=dev1_plans, dev2_plans=dev2_plans, dev1_blockers=dev1_blockers, dev2_blockers=dev2_blockers, dev1_notes=dev1_notes, dev2_notes=dev2_notes)
-
+    for repo in ["frontend", "backend"]:
+        devs = expected_devs[repo]
+        dev_entries = grouped[repo]
+        # Prepare data for mailer
+        dev1 = dev_entries[devs[0]]
+        dev2 = dev_entries[devs[1]]
+        receivers = frontend_receivers if repo == "frontend" else backend_receivers
+        mailer = DailyReportMailer(repo, sender, receivers, app_password)
+        mailer.send_report(
+            dev1_accomplishments=dev1['accomplishments'],
+            dev2_accomplishments=dev2['accomplishments'],
+            dev1_plans=dev1['plans'],
+            dev2_plans=dev2['plans'],
+            dev1_blockers=dev1['blockers'],
+            dev2_blockers=dev2['blockers'],
+            dev1_notes=dev1['notes'],
+            dev2_notes=dev2['notes'],
+            attachments=[]
+        )
+        if MOCK_MODE != "False":
+            print(f"\n--- MOCK REPORT for {repo.upper()} ---")
+            print(f"{devs[0]}: {dev1}")
+            print(f"{devs[1]}: {dev2}")
 
 if __name__ == "__main__":
     main()

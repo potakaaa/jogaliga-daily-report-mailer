@@ -1,0 +1,2 @@
+#!/bin/sh
+python jogaliga_daily_report_mailer.py 
