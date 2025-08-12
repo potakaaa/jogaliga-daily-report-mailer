@@ -15,10 +15,11 @@ class DailyReportMailer:
         self.today = datetime.date.today().strftime('%B %d, %Y')
         self.developer = []
         
-        # Frontend has two developers (Gerald & Jesreal). Backend has two developers (Gerald & Hans).
+        # Frontend has three developers (Gerald, Jesreal & Erick). Backend has two developers (Gerald & Hans).
         if repo == "frontend":
             self.developer.append(os.getenv("DEV1_NAME_FRONTEND"))  # Gerald
             self.developer.append(os.getenv("DEV2_NAME_FRONTEND"))  # Jesreal
+            self.developer.append(os.getenv("DEV3_NAME_FRONTEND"))  # Erick
         elif repo == "backend":
             self.developer.append(os.getenv("DEV1_NAME_BACKEND"))  # Gerald
             self.developer.append(os.getenv("DEV2_NAME_BACKEND"))  # Hans
@@ -34,10 +35,10 @@ class DailyReportMailer:
         # Join with line breaks
         return "<br>".join(bullet_points)
 
-    def send_report(self, dev1_accomplishments: str = "", dev2_accomplishments: str = "",
-                   dev1_plans: str = "", dev2_plans: str = "",
-                   dev1_blockers: str = "", dev2_blockers: str = "",
-                   dev1_notes: str = "", dev2_notes: str = "",
+    def send_report(self, dev1_accomplishments: str = "", dev2_accomplishments: str = "", dev3_accomplishments: str = "",
+                   dev1_plans: str = "", dev2_plans: str = "", dev3_plans: str = "",
+                   dev1_blockers: str = "", dev2_blockers: str = "", dev3_blockers: str = "",
+                   dev1_notes: str = "", dev2_notes: str = "", dev3_notes: str = "",
                    attachments: list = None):
         subject = f"DAILY REPORT FOR JOGALIGA {self.repo.upper()} [{self.today.upper()}]"
         
@@ -51,6 +52,12 @@ class DailyReportMailer:
         dev1_note = self.format_bullet_points(dev1_notes) if dev1_notes else "None"
         dev2_note = self.format_bullet_points(dev2_notes) if dev2_notes else "None"
         
+        # Handle 3rd developer data (only for frontend)
+        if self.repo == "frontend":
+            dev3_acc = self.format_bullet_points(dev3_accomplishments) if dev3_accomplishments else "None"
+            dev3_plan = self.format_bullet_points(dev3_plans) if dev3_plans else "None"
+            dev3_block = self.format_bullet_points(dev3_blockers) if dev3_blockers else "None"
+            dev3_note = self.format_bullet_points(dev3_notes) if dev3_notes else "None"
         
         # Dynamically build HTML sections based on the number of developers
         dev_data = [
@@ -69,6 +76,16 @@ class DailyReportMailer:
                 "note": dev2_note,
             }
         ]
+        
+        # Add 3rd developer data for frontend
+        if self.repo == "frontend":
+            dev_data.append({
+                "name": self.developer[2],
+                "acc": dev3_acc,
+                "plan": dev3_plan,
+                "block": dev3_block,
+                "note": dev3_note,
+            })
 
         def build_section(title: str, key: str) -> str:
             """Return an HTML section for the given title and key."""
@@ -193,7 +210,7 @@ def main():
 
     # Define expected developers for each repo
     expected_devs = {
-        'frontend': [os.getenv("DEV1_NAME_FRONTEND", "Gerald"), os.getenv("DEV2_NAME_FRONTEND", "Jesreal")],
+        'frontend': [os.getenv("DEV1_NAME_FRONTEND", "Gerald"), os.getenv("DEV2_NAME_FRONTEND", "Jesreal"), os.getenv("DEV3_NAME_FRONTEND", "Erick")],
         'backend': [os.getenv("DEV1_NAME_BACKEND", "Gerald"), os.getenv("DEV2_NAME_BACKEND", "Hans")],
     }
 
@@ -209,21 +226,47 @@ def main():
         dev2 = dev_entries[devs[1]]
         receivers = frontend_receivers if repo == "frontend" else backend_receivers
         mailer = DailyReportMailer(repo, sender, receivers, app_password)
-        mailer.send_report(
-            dev1_accomplishments=dev1['accomplishments'],
-            dev2_accomplishments=dev2['accomplishments'],
-            dev1_plans=dev1['plans'],
-            dev2_plans=dev2['plans'],
-            dev1_blockers=dev1['blockers'],
-            dev2_blockers=dev2['blockers'],
-            dev1_notes=dev1['notes'],
-            dev2_notes=dev2['notes'],
-            attachments=[]
-        )
-        if MOCK_MODE != "False":
-            print(f"\n--- MOCK REPORT for {repo.upper()} ---")
-            print(f"{devs[0]}: {dev1}")
-            print(f"{devs[1]}: {dev2}")
+        
+        if repo == "frontend":
+            # Frontend has 3 developers
+            dev3 = dev_entries[devs[2]]
+            mailer.send_report(
+                dev1_accomplishments=dev1['accomplishments'],
+                dev2_accomplishments=dev2['accomplishments'],
+                dev3_accomplishments=dev3['accomplishments'],
+                dev1_plans=dev1['plans'],
+                dev2_plans=dev2['plans'],
+                dev3_plans=dev3['plans'],
+                dev1_blockers=dev1['blockers'],
+                dev2_blockers=dev2['blockers'],
+                dev3_blockers=dev3['blockers'],
+                dev1_notes=dev1['notes'],
+                dev2_notes=dev2['notes'],
+                dev3_notes=dev3['notes'],
+                attachments=[]
+            )
+            if MOCK_MODE != "False":
+                print(f"\n--- MOCK REPORT for {repo.upper()} ---")
+                print(f"{devs[0]}: {dev1}")
+                print(f"{devs[1]}: {dev2}")
+                print(f"{devs[2]}: {dev3}")
+        else:
+            # Backend has 2 developers
+            mailer.send_report(
+                dev1_accomplishments=dev1['accomplishments'],
+                dev2_accomplishments=dev2['accomplishments'],
+                dev1_plans=dev1['plans'],
+                dev2_plans=dev2['plans'],
+                dev1_blockers=dev1['blockers'],
+                dev2_blockers=dev2['blockers'],
+                dev1_notes=dev1['notes'],
+                dev2_notes=dev2['notes'],
+                attachments=[]
+            )
+            if MOCK_MODE != "False":
+                print(f"\n--- MOCK REPORT for {repo.upper()} ---")
+                print(f"{devs[0]}: {dev1}")
+                print(f"{devs[1]}: {dev2}")
 
 if __name__ == "__main__":
     main()
