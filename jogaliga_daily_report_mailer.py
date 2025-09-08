@@ -1,4 +1,8 @@
 import yagmail, datetime, os, dotenv
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from zoneinfo import ZoneInfo
 import gspread
 from google.oauth2.service_account import Credentials
 from collections import defaultdict
@@ -26,13 +30,39 @@ class DailyReportMailer:
             raise ValueError("Invalid repo")
 
     def format_bullet_points(self, text: str) -> str:
-        """Convert a block of text into HTML bullet points, splitting by commas."""
-        # Split the text into items by comma and filter out empty items
-        items = [item.strip() for item in text.split(',') if item.strip()]
-        # Convert each item into a bullet point with capitalized first letter
-        bullet_points = [f"• {item.capitalize()}" for item in items]
-        # Join with line breaks
-        return "<br>".join(bullet_points)
+        """Convert text into HTML bullets splitting on commas or newlines."""
+        if not text:
+            return "None"
+        if '•' in text:
+            return text.replace('\n', '<br>')
+        # Split by comma or newline
+        raw = []
+        for part in text.split('\n'):
+            raw.extend(part.split(','))
+        items = [p.strip() for p in raw if p and p.strip()]
+        if not items:
+            return "None"
+        return "<br>".join([f"• {item}" for item in items])
+
+    @staticmethod
+    def previous_day_window_asia_manila() -> tuple:
+        """Return (start_iso_utc, end_iso_utc, label_date) for the previous calendar day in Asia/Manila.
+
+        - start/end returned as ISO8601 UTC timestamps suitable for GitHub API query parameters.
+        - label_date returned as a human-readable date string in Asia/Manila.
+        """
+        tz = ZoneInfo("Asia/Manila")
+        now_ph = datetime.datetime.now(tz)
+        prev_day = (now_ph.date() - datetime.timedelta(days=1))
+        start_ph = datetime.datetime.combine(prev_day, datetime.time(0, 0, 0), tzinfo=tz)
+        end_ph = datetime.datetime.combine(prev_day, datetime.time(23, 59, 59), tzinfo=tz)
+        # Truncate to seconds and append Z to satisfy GitHub Search API
+        start_utc_dt = start_ph.astimezone(ZoneInfo("UTC"))
+        end_utc_dt = end_ph.astimezone(ZoneInfo("UTC"))
+        start_utc = start_utc_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+        end_utc = end_utc_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+        label_date = prev_day.strftime('%B %d, %Y')
+        return start_utc, end_utc, label_date
 
     def send_report(self, dev1_accomplishments: str = "", dev2_accomplishments: str = "",
                    dev1_plans: str = "", dev2_plans: str = "",
@@ -135,6 +165,266 @@ def fetch_todays_reports(creds_path):
     return todays_responses
 
 
+def get_sheets_client(creds_path: str):
+    SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
+    creds = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
+    return gspread.authorize(creds)
+
+
+def open_spreadsheet(sheet_id: str, creds_path: str):
+    gc = get_sheets_client(creds_path)
+    return gc.open_by_key(sheet_id)
+
+
+def get_worksheets_map(sh):
+    """Return a mapping of worksheet title to worksheet object."""
+    return {ws.title: ws for ws in sh.worksheets()}
+
+
+def _first_present(row: dict, keys: list, default: str = "") -> str:
+    for k in keys:
+        if k in row and row[k] is not None and str(row[k]).strip() != "":
+            return str(row[k])
+    return default
+
+
+def parse_tab_generic(ws) -> list:
+    """Parse a worksheet into list of normalized dicts with date, developer, text.
+
+    Tries multiple header variants to be robust.
+    """
+    records = ws.get_all_records()
+    out = []
+    for row in records:
+        date_val = _first_present(row, ["Date", "Timestamp", "date"])
+        dev_val = _first_present(row, ["Developer", "Developer Name", "Name", "Developer name"])
+        text_val = _first_present(
+            row,
+            [
+                "Text",
+                "Value",
+                "Accomplishments",
+                "Accomplishment Today (separate items with commas)",
+                "Blockers",
+                "Blockers/Questions (separate items with commas)",
+                "Notes",
+                "Notes (separate items with commas)",
+            ],
+        )
+        if dev_val:
+            out.append({"date": str(date_val), "developer": dev_val.strip(), "text": str(text_val)})
+    return out
+
+
+def parse_accomplishments_tab(ws) -> list:
+    return parse_tab_generic(ws)
+
+
+def parse_blockers_tab(ws) -> list:
+    return parse_tab_generic(ws)
+
+
+def parse_notes_tab(ws) -> list:
+    return parse_tab_generic(ws)
+
+
+def _parse_date_to_ph_date(date_str: str) -> datetime.date:
+    tz = ZoneInfo("Asia/Manila")
+    # Try common formats
+    for fmt in ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y", "%Y-%m-%d"):  # flexible
+        try:
+            dt = datetime.datetime.strptime(date_str, fmt)
+            return dt.date()
+        except Exception:
+            continue
+    # ISO with timezone
+    try:
+        dt = datetime.datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        return dt.astimezone(tz).date()
+    except Exception:
+        pass
+    # Fallback: today PH
+    return datetime.datetime.now(tz).date()
+
+
+def filter_rows_by_previous_day_ph(rows: list) -> list:
+    tz = ZoneInfo("Asia/Manila")
+    prev_day = (datetime.datetime.now(tz).date() - datetime.timedelta(days=1))
+    out = []
+    for r in rows:
+        d = _parse_date_to_ph_date(str(r.get("date", "")))
+        if d == prev_day:
+            out.append(r)
+    return out
+
+
+def build_sheet_fallback_by_repo_and_dev(sh, expected_devs: dict) -> dict:
+    """Return fallback structure from sheets for the previous PH day.
+
+    {repo: {developer: {accomplishments, blockers, notes}}}
+    """
+    ws_map = get_worksheets_map(sh)
+    acc = filter_rows_by_previous_day_ph(parse_accomplishments_tab(ws_map.get("Today’s Accomplishments") or ws_map.get("Today's Accomplishments") or ws_map.get("Accomplishments") or ws_map.get("Today Accomplishments") or sh.sheet1))
+    blk = filter_rows_by_previous_day_ph(parse_blockers_tab(ws_map.get("Blockers") or ws_map.get("Blockers & Questions") or sh.sheet1))
+    nts = filter_rows_by_previous_day_ph(parse_notes_tab(ws_map.get("Notes") or sh.sheet1))
+
+    def repo_for_dev(dev_name: str) -> str:
+        for repo_key, devs in expected_devs.items():
+            for d in devs:
+                if d and dev_name and d.strip().lower() == dev_name.strip().lower():
+                    return repo_key
+        return "unknown"
+
+    out: dict = {"frontend": {}, "backend": {}}
+    for row in acc:
+        repo = repo_for_dev(row["developer"]) 
+        if repo in ("frontend", "backend"):
+            out[repo].setdefault(row["developer"], {"accomplishments": "", "blockers": "", "notes": ""})
+            out[repo][row["developer"]]["accomplishments"] = row["text"]
+    for row in blk:
+        repo = repo_for_dev(row["developer"]) 
+        if repo in ("frontend", "backend"):
+            out[repo].setdefault(row["developer"], {"accomplishments": "", "blockers": "", "notes": ""})
+            out[repo][row["developer"]]["blockers"] = row["text"]
+    for row in nts:
+        repo = repo_for_dev(row["developer"]) 
+        if repo in ("frontend", "backend"):
+            out[repo].setdefault(row["developer"], {"accomplishments": "", "blockers": "", "notes": ""})
+            out[repo][row["developer"]]["notes"] = row["text"]
+    return out
+
+
+def merge_with_sheet_fallback(activity_by_dev: dict, fallback_by_dev: dict) -> dict:
+    """Merge, preferring GitHub activity where present; otherwise use Sheet values.
+
+    Only fills accomplishments/blockers/notes from Sheet when corresponding GH sections
+    for a developer are empty (no PRs/issues/reviews/comments).
+    """
+    merged = {}
+    for repo in ("frontend", "backend"):
+        merged[repo] = {}
+        repo_activity = activity_by_dev.get(repo, {})
+        repo_fallback = fallback_by_dev.get(repo, {})
+        dev_names = set(list(repo_activity.keys()) + list(repo_fallback.keys()))
+        for dev in dev_names:
+            act = repo_activity.get(dev, {
+                "prs_opened": [],
+                "prs_merged": [],
+                "issues_closed": [],
+                "issues_updated": [],
+            })
+            fb = repo_fallback.get(dev, {"accomplishments": "", "blockers": "", "notes": ""})
+
+            has_any_gh = any([
+                act["prs_opened"], act["prs_merged"], act["issues_closed"], act["issues_updated"]
+            ])
+
+            merged[repo][dev] = {
+                **act,
+                "accomplishments_fallback": None if has_any_gh else fb.get("accomplishments") or "",
+                "blockers_fallback": None if has_any_gh else fb.get("blockers") or "",
+                "notes_fallback": None if has_any_gh else fb.get("notes") or "",
+            }
+    return merged
+
+def _html_h1(title: str) -> str:
+    return f'<h1 style="color:#27a25a;font-size:28px;margin:12px 0 8px 0;padding:0;">{title}</h1>'
+
+
+def _html_h2(title: str) -> str:
+    return f'<h2 style="color:#111;font-size:20px;margin:10px 0 6px 0;padding:0;">{title}</h2>'
+
+
+def _html_h2_title(title: str) -> str:
+    """Green section titles (keep developer names black via _html_h2)."""
+    return f'<h2 style="color:#27a25a;font-size:20px;margin:10px 0 6px 0;padding:0;">{title}</h2>'
+
+
+def _html_h3_block(content_html: str) -> str:
+    return f'<div style="font-size:16px;margin:0 0 8px 0;">{content_html}</div>'
+
+
+def _html_list(items: list) -> str:
+    if not items:
+        return _html_h3_block('<p style="margin:0 0 10px 20px;">No updates</p>')
+    li = []
+    for it in items:
+        title = it.get("title", "")
+        url = it.get("html_url", "")
+        number = it.get("number")
+        label = f"#{number} {title}" if number is not None else title
+        line = f"<a href=\"{url}\" style=\"text-decoration:none;color:#111\">{label}</a>"
+        li.append(f"<li style=\"margin:4px 0;\">{line}</li>")
+    return _html_h3_block('<ul style="margin:0 0 10px 20px;">' + "".join(li) + "</ul>")
+
+
+def _html_dev_block(dev_name: str, data: dict) -> str:
+    parts = [_html_h2(dev_name)]
+    parts.append(_html_h2_title("PRs Created") + _html_list(data.get("prs_opened", [])))
+    parts.append(_html_h2_title("PRs Merged") + _html_list(data.get("prs_merged", [])))
+    parts.append(_html_h2_title("Issues Closed") + _html_list(data.get("issues_closed", [])))
+    parts.append(_html_h2_title("Issues Updated") + _html_list(data.get("issues_updated", [])))
+
+    # Optional manual entries (if present), with clean titles
+    if data.get("accomplishments_fallback") is not None:
+        acc = data.get("accomplishments_fallback") or "No updates"
+        parts.append(_html_h2_title("Accomplishments") + _html_h3_block(f'<p style="margin:0 0 10px 20px;">{acc}</p>'))
+    if data.get("blockers_fallback") is not None:
+        blk = data.get("blockers_fallback") or "No updates"
+        parts.append(_html_h2_title("Blockers") + _html_h3_block(f'<p style=\"margin:0 0 10px 20px;\">{blk}</p>'))
+    if data.get("notes_fallback") is not None:
+        nts = data.get("notes_fallback") or "No updates"
+        parts.append(_html_h2_title("Notes") + _html_h3_block(f'<p style="margin:0 0 10px 20px;">{nts}</p>'))
+
+    return "".join(parts)
+
+
+def build_daily_report_email_for_repo(repo_key: str, repo_activity: dict, label_date: str) -> tuple:
+    """Return (subject, body_html) for a single-repo daily report."""
+    dev_names = ", ".join([d for d in repo_activity.keys()]) or "N/A"
+    header = (
+        f"<h1 style=\"margin:0;font-size:26px;\">Jogaliga {repo_key.capitalize()} Daily Report</h1>"
+        f"<p style=\"margin:10px 0 0 0;font-size:16px\"><b>Developers:</b> {dev_names} &nbsp;&nbsp; <b>Date:</b> {label_date}</p>"
+    )
+    sections = [_html_h1("Today's Accomplishments")]
+    blocks = []
+    for dev_name, dev_data in repo_activity.items():
+        blocks.append(_html_dev_block(dev_name, dev_data))
+    if blocks:
+        sections.append("".join(blocks))
+    else:
+        sections.append('<p style="margin:0 0 10px 0;font-size:16px">No updates</p>')
+
+    body = f'''<table width="600" cellpadding="0" cellspacing="0" border="0" style="font-family:Arial,sans-serif;margin:0;padding:0;">
+<tr><td bgcolor="#27a25a" style="color:#fff;padding:24px;border-radius:15px">{header}</td></tr>
+<tr><td bgcolor="#ffffff" style="padding:10px;">{''.join(sections)}</td></tr>
+<tr><td bgcolor="#f9fafb" style="padding:15px;text-align:center;font-size:12px;color:#666;">This is an automated report.</td></tr>
+</table>'''
+    subject = f"Daily Report - {repo_key.capitalize()} [{label_date}]"
+    return subject, body
+
+
+def render_daily_report_dry_run() -> str:
+    """Generate a minimal dry-run HTML using placeholder content for smoke testing."""
+    sample = {
+        "frontend": {
+            "Gerald": {"prs_opened": [{"number": 1, "title": "Feat", "html_url": "#"}],
+                        "prs_merged": [], "issues_closed": [], "issues_updated": [],
+                        "accomplishments_fallback": None, "blockers_fallback": None, "notes_fallback": None},
+        },
+        "backend": {}
+    }
+    _, html = build_daily_report_email_for_repo("frontend", sample["frontend"], "January 01, 2025")
+    return html
+
+
+def send_error_email(sender: str, app_password: str, receiver: str, message: str) -> None:
+    try:
+        yag = yagmail.SMTP(sender, app_password)
+        yag.send(receiver, "Daily Report Error", [message])
+    except Exception:
+        pass
+
 def group_reports_by_repo_and_developer(responses, expected_devs):
     grouped = defaultdict(dict)
     for row in responses:
@@ -166,64 +456,445 @@ def group_reports_by_repo_and_developer(responses, expected_devs):
     return grouped
 
 
+def _github_headers() -> dict:
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "JogaligaDailyReportMailer/1.0",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+_GH_SESSION = None
+
+
+def _github_session():
+    """Return a requests.Session with retries/backoff configured for GitHub API."""
+    global _GH_SESSION
+    if _GH_SESSION is not None:
+        return _GH_SESSION
+    session = requests.Session()
+    retry = Retry(
+        total=5,
+        connect=5,
+        read=5,
+        backoff_factor=1.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    # Default headers (can be overridden per-request)
+    session.headers.update({"User-Agent": "JogaligaDailyReportMailer/1.0"})
+    _GH_SESSION = session
+    return _GH_SESSION
+
+
+def _search_date_range(start_iso_utc: str, end_iso_utc: str) -> str:
+    """Convert ISO UTC timestamps to GitHub Search API date range (YYYY-MM-DD..YYYY-MM-DD).
+
+    The Search API does not reliably accept timestamp precision; use date-only.
+    """
+    s = datetime.datetime.fromisoformat(start_iso_utc.replace("Z", "+00:00"))
+    e = datetime.datetime.fromisoformat(end_iso_utc.replace("Z", "+00:00"))
+    return f"{s.date()}..{e.date()}"
+
+
+def _safe_get(url: str, headers: dict, params: dict) -> dict:
+    """HTTP GET with graceful fallback: returns {} on HTTP errors like 401/403/422."""
+    try:
+        session = _github_session()
+        resp = session.get(url, headers=headers, params=params, timeout=(10, 30))
+        if resp.status_code >= 400:
+            # Best-effort log to console, but don't crash
+            try:
+                msg = resp.json()
+            except Exception:
+                msg = resp.text
+            print(f"GitHub API GET {url} failed: {resp.status_code} {msg}")
+            return {}
+        return resp.json()
+    except Exception as exc:
+        print(f"GitHub API GET {url} exception: {exc}")
+        return {}
+
+def fetch_prs_opened(owner: str, repo: str, start_iso_utc: str, end_iso_utc: str) -> list:
+    """Fetch PRs opened within [start, end] using GitHub search API.
+
+    Returns list of dicts: {number, title, html_url, author, created_at}
+    """
+    date_range = _search_date_range(start_iso_utc, end_iso_utc)
+    query = f"repo:{owner}/{repo} is:pr created:{date_range}"
+    url = "https://api.github.com/search/issues"
+    headers = _github_headers()
+    page = 1
+    per_page = 100
+    results = []
+    while True:
+        params = {"q": query, "per_page": per_page, "page": page, "sort": "created", "order": "desc"}
+        data = _safe_get(url, headers, params) or {}
+        items = data.get("items", [])
+        for it in items:
+            results.append({
+                "number": it.get("number"),
+                "title": it.get("title", ""),
+                "html_url": it.get("html_url", ""),
+                "author": (it.get("user") or {}).get("login", ""),
+                "created_at": it.get("created_at", ""),
+            })
+        if len(items) < per_page:
+            break
+        page += 1
+    return results
+
+
+def fetch_prs_opened_for_repos(repos: list, start_iso_utc: str, end_iso_utc: str) -> dict:
+    """Fetch opened PRs for multiple repos. repos entries like (owner, repo_name)."""
+    data: dict = {}
+    for owner, repo in repos:
+        data[f"{owner}/{repo}"] = fetch_prs_opened(owner, repo, start_iso_utc, end_iso_utc)
+    return data
+
+
+def fetch_prs_merged(owner: str, repo: str, start_iso_utc: str, end_iso_utc: str) -> list:
+    """Fetch PRs merged within [start, end] using GitHub search API.
+
+    Returns list of dicts: {number, title, html_url, author, merged_at}
+    """
+    date_range = _search_date_range(start_iso_utc, end_iso_utc)
+    query = f"repo:{owner}/{repo} is:pr is:merged merged:{date_range}"
+    url = "https://api.github.com/search/issues"
+    headers = _github_headers()
+    page = 1
+    per_page = 100
+    results = []
+    while True:
+        params = {"q": query, "per_page": per_page, "page": page, "sort": "updated", "order": "desc"}
+        data = _safe_get(url, headers, params) or {}
+        items = data.get("items", [])
+        for it in items:
+            results.append({
+                "number": it.get("number"),
+                "title": it.get("title", ""),
+                "html_url": it.get("html_url", ""),
+                "author": (it.get("user") or {}).get("login", ""),
+                "merged_at": it.get("closed_at", ""),
+            })
+        if len(items) < per_page:
+            break
+        page += 1
+    return results
+
+
+def fetch_prs_merged_for_repos(repos: list, start_iso_utc: str, end_iso_utc: str) -> dict:
+    data: dict = {}
+    for owner, repo in repos:
+        data[f"{owner}/{repo}"] = fetch_prs_merged(owner, repo, start_iso_utc, end_iso_utc)
+    return data
+
+
+def _iso_in_window(iso_ts: str, start_iso_utc: str, end_iso_utc: str) -> bool:
+    if not iso_ts:
+        return False
+    try:
+        ts = datetime.datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        start = datetime.datetime.fromisoformat(start_iso_utc.replace("Z", "+00:00"))
+        end = datetime.datetime.fromisoformat(end_iso_utc.replace("Z", "+00:00"))
+        return start <= ts <= end
+    except Exception:
+        return False
+
+
+def fetch_pr_reviews_and_comments(owner: str, repo: str, start_iso_utc: str, end_iso_utc: str) -> list:
+    """Fetch PR reviews and top-level PR comments within the window.
+
+    NOTE: Reviews and comments are excluded from reports per user request.
+    Returns empty list.
+    """
+    return []
+
+
+def fetch_pr_reviews_and_comments_for_repos(repos: list, start_iso_utc: str, end_iso_utc: str) -> dict:
+    data: dict = {}
+    for owner, repo in repos:
+        data[f"{owner}/{repo}"] = fetch_pr_reviews_and_comments(owner, repo, start_iso_utc, end_iso_utc)
+    return data
+
+
+def _search_issues(query: str, sort: str = "updated", order: str = "desc") -> list:
+    url = "https://api.github.com/search/issues"
+    headers = _github_headers()
+    page = 1
+    per_page = 100
+    out = []
+    while True:
+        params = {"q": query, "per_page": per_page, "page": page, "sort": sort, "order": order}
+        data = _safe_get(url, headers, params) or {}
+        items = data.get("items", [])
+        out.extend(items)
+        if len(items) < per_page:
+            break
+        page += 1
+    return out
+
+
+def fetch_issues_closed_and_updated(owner: str, repo: str, start_iso_utc: str, end_iso_utc: str) -> list:
+    """Fetch issues closed and issues updated within [start, end].
+
+    Returns list of dicts with union of both sets. Duplicates are merged by issue number.
+    Each item: {number, title, html_url, author, state, closed_at, updated_at, kind}
+    kind in {"closed", "updated"}
+    """
+    base = f"repo:{owner}/{repo} is:issue"
+    date_range = _search_date_range(start_iso_utc, end_iso_utc)
+    closed_items = _search_issues(f"{base} closed:{date_range}", sort="updated")
+    updated_items = _search_issues(f"{base} updated:{date_range}", sort="updated")
+
+    by_num: dict = {}
+    def add_items(items: list, kind: str):
+        for it in items:
+            number = it.get("number")
+            if number is None:
+                continue
+            rec = by_num.get(number, {
+                "number": number,
+                "title": it.get("title", ""),
+                "html_url": it.get("html_url", ""),
+                "author": (it.get("user") or {}).get("login", ""),
+                "state": it.get("state", ""),
+                "closed_at": it.get("closed_at", ""),
+                "updated_at": it.get("updated_at", ""),
+                "kind": kind,
+            })
+            # If we already have an entry, prefer marking as closed if applicable
+            if rec.get("kind") != "closed" and kind == "closed":
+                rec["kind"] = "closed"
+                rec["closed_at"] = it.get("closed_at", rec.get("closed_at", ""))
+            else:
+                # ensure updated_at is the latest seen
+                rec["updated_at"] = it.get("updated_at", rec.get("updated_at", ""))
+            by_num[number] = rec
+
+    add_items(closed_items, "closed")
+    add_items(updated_items, "updated")
+    return list(by_num.values())
+
+
+def fetch_issues_closed_and_updated_for_repos(repos: list, start_iso_utc: str, end_iso_utc: str) -> dict:
+    data: dict = {}
+    for owner, repo in repos:
+        data[f"{owner}/{repo}"] = fetch_issues_closed_and_updated(owner, repo, start_iso_utc, end_iso_utc)
+    return data
+
+
+def _get_github_user_map(repo: str) -> dict:
+    """Optional mapping of GitHub usernames to developer display names per repo.
+
+    Env variables supported (optional):
+    - DEV1_NAME_FRONTEND, DEV2_NAME_FRONTEND, DEV1_GH_FRONTEND, DEV2_GH_FRONTEND
+    - DEV1_NAME_BACKEND,  DEV2_NAME_BACKEND,  DEV1_GH_BACKEND,  DEV2_GH_BACKEND
+    """
+    mapping: dict = {}
+    if repo == "frontend":
+        name1 = os.getenv("DEV1_NAME_FRONTEND") or ""
+        name2 = os.getenv("DEV2_NAME_FRONTEND") or ""
+        gh1_orig = (os.getenv("DEV1_GH_FRONTEND") or "").strip()
+        gh2_orig = (os.getenv("DEV2_GH_FRONTEND") or "").strip()
+        gh1_lower = gh1_orig.lower()
+        gh2_lower = gh2_orig.lower()
+        if gh1_orig and name1:
+            mapping[gh1_orig] = name1  # Store original case
+            mapping[gh1_lower] = name1  # Also store lowercase
+        if gh2_orig and name2:
+            mapping[gh2_orig] = name2  # Store original case
+            mapping[gh2_lower] = name2  # Also store lowercase
+    elif repo == "backend":
+        name1 = os.getenv("DEV1_NAME_BACKEND") or ""
+        name2 = os.getenv("DEV2_NAME_BACKEND") or ""
+        gh1_orig = (os.getenv("DEV1_GH_BACKEND") or "").strip()
+        gh2_orig = (os.getenv("DEV2_GH_BACKEND") or "").strip()
+        gh1_lower = gh1_orig.lower()
+        gh2_lower = gh2_orig.lower()
+        if gh1_orig and name1:
+            mapping[gh1_orig] = name1  # Store original case
+            mapping[gh1_lower] = name1  # Also store lowercase
+        if gh2_orig and name2:
+            mapping[gh2_orig] = name2  # Store original case
+            mapping[gh2_lower] = name2  # Also store lowercase
+    return mapping
+
+
+def _assign_dev_for_login(repo: str, login: str, expected_devs_for_repo: list) -> str:
+    """Map a GitHub login to a developer name using optional env mapping; fallback to login string."""
+    if not login:
+        return "Unmapped"
+
+    # Skip bot accounts
+    if login.endswith('[bot]') or login == 'github-actions[bot]':
+        return ""
+
+    mapping = _get_github_user_map(repo)
+    # Try original case first, then lowercase
+    if login in mapping:
+        return mapping[login]
+    login_lower = login.strip().lower()
+    if login_lower in mapping:
+        return mapping[login_lower]
+    # if login already equals one of expected developers (rare), allow it
+    for d in expected_devs_for_repo:
+        if d and d.strip().lower() == login_lower:
+            return d
+    return login
+
+
+def normalize_activity_by_developer(
+    repos: list,
+    expected_devs: dict,
+    start_iso_utc: str,
+    end_iso_utc: str,
+) -> dict:
+    """Collect and normalize activity grouped by developer per repo.
+
+    Returns structure: {repo_name: {developer_name: {prs_opened, prs_merged, issues_closed, issues_updated}}}
+    """
+    # Explicitly exclude commits as a data source per PRD.
+    # Only PRs (opened/merged) and Issues (closed/updated) are considered.
+    opened = fetch_prs_opened_for_repos(repos, start_iso_utc, end_iso_utc)
+    merged = fetch_prs_merged_for_repos(repos, start_iso_utc, end_iso_utc)
+    issues = fetch_issues_closed_and_updated_for_repos(repos, start_iso_utc, end_iso_utc)
+
+    out: dict = {}
+    for owner, repo_name in repos:
+        key = f"{owner}/{repo_name}"
+        repo_short = "frontend" if "frontend" in repo_name else ("backend" if "backend" in repo_name else repo_name)
+        out[repo_short] = {}
+        devs = expected_devs.get(repo_short, [])
+        # Initialize
+        for d in devs:
+            out[repo_short][d] = {
+                "prs_opened": [],
+                "prs_merged": [],
+                "issues_closed": [],
+                "issues_updated": [],
+            }
+
+        # PRs opened
+        for it in opened.get(key, []):
+            dev = _assign_dev_for_login(repo_short, it.get("author", ""), devs)
+            if not dev:  # Skip bots and empty assignments
+                continue
+            out[repo_short].setdefault(dev, {"prs_opened": [], "prs_merged": [], "issues_closed": [], "issues_updated": []})
+            out[repo_short][dev]["prs_opened"].append(it)
+
+        # PRs merged
+        for it in merged.get(key, []):
+            dev = _assign_dev_for_login(repo_short, it.get("author", ""), devs)
+            if not dev:  # Skip bots and empty assignments
+                continue
+            out[repo_short].setdefault(dev, {"prs_opened": [], "prs_merged": [], "issues_closed": [], "issues_updated": []})
+            out[repo_short][dev]["prs_merged"].append(it)
+
+        # Issues
+        for it in issues.get(key, []):
+            dev = _assign_dev_for_login(repo_short, it.get("author", ""), devs)
+            if not dev:  # Skip bots and empty assignments
+                continue
+            out[repo_short].setdefault(dev, {"prs_opened": [], "prs_merged": [], "issues_closed": [], "issues_updated": []})
+            if it.get("kind") == "closed":
+                out[repo_short][dev]["issues_closed"].append(it)
+            else:
+                out[repo_short][dev]["issues_updated"].append(it)
+
+    return out
+
 def main():
 
     dotenv.load_dotenv()
     
     CREDS_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "jogaliga-daily-report-652c86c83d3f.json")
-    MOCK_MODE = os.getenv("MOCK_MODE", "True")
-    
     sender = os.getenv("SENDER_EMAIL")
     app_password = os.getenv("GMAIL_APP_PASSWORD")
-    # Receivers for each repo
-    frontend_receivers = [os.getenv("RECEIVER_EMAIL")]
-    backend_receivers = [os.getenv("RECEIVER_EMAIL")]
-    if os.getenv("JESREAL_EMAIL"):
-        frontend_receivers.append(os.getenv("JESREAL_EMAIL"))
-    if os.getenv("HANS_EMAIL"):
-        backend_receivers.append(os.getenv("HANS_EMAIL"))
-    # For mock mode, override receivers
-    test_email = "rhelbiro@gmail.com"
-    if MOCK_MODE != "False":
-        frontend_receivers = [test_email]
-        backend_receivers = [test_email]
-        print("Mock mode is enabled")
-    else:
-        print("Mock mode is disabled")
+    no_send = os.getenv("NO_SEND", "False") != "False"
+    skip_sheets = os.getenv("NO_SHEETS", "False") != "False"
 
-    # Define expected developers for each repo
+    def compute_receivers(repo_key: str) -> list:
+        base = [os.getenv("RECEIVER_EMAIL")]
+        if repo_key == "frontend" and os.getenv("JESREAL_EMAIL"):
+            base.append(os.getenv("JESREAL_EMAIL"))
+        if repo_key == "backend" and os.getenv("HANS_EMAIL"):
+            base.append(os.getenv("HANS_EMAIL"))
+        manual_mock = os.getenv("MANUAL_MOCK", "False")
+        mock_addr = (os.getenv("MOCK_RECEIVER_EMAIL") or "").strip()
+        if manual_mock != "False" and mock_addr:
+            return [mock_addr]
+        if os.getenv("MOCK_MODE", "False") != "False" and mock_addr:
+            print("MOCK_MODE enabled; using MOCK_RECEIVER_EMAIL")
+            return [mock_addr]
+        return base
+
+    frontend_receivers = compute_receivers("frontend")
+    backend_receivers = compute_receivers("backend")
+
     expected_devs = {
         'frontend': [os.getenv("DEV1_NAME_FRONTEND", "Gerald"), os.getenv("DEV2_NAME_FRONTEND", "Jesreal")],
-        'backend': [os.getenv("DEV1_NAME_BACKEND", "Gerald"), os.getenv("DEV2_NAME_BACKEND", "Hans")],
+        'backend': [os.getenv("DEV1_NAME_BACKEND", "Gerald"), os.getenv("DEV2_NAME_BACKEND", "YOUR_NAME")],
     }
 
-    # Fetch today's responses
-    responses = fetch_todays_reports(CREDS_PATH)
-    grouped = group_reports_by_repo_and_developer(responses, expected_devs)
+    # GitHub activity window and repos
+    print("[1/6] Calculating window...", flush=True)
+    start_iso, end_iso, label_date = DailyReportMailer.previous_day_window_asia_manila()
+    # Resolve repo slugs from env (owner/repo). Defaults to AppArara slugs provided.
+    frontend_slug = os.getenv("FRONTEND_REPO", "AppArara/jogaliga_frontend")
+    backend_slug = os.getenv("BACKEND_REPO", "AppArara/jogaliga_backend")
+    def _split_slug(slug: str):
+        parts = (slug or "").split("/", 1)
+        return (parts[0], parts[1]) if len(parts) == 2 else ("", slug)
+    repos = [_split_slug(frontend_slug), _split_slug(backend_slug)]
 
-    for repo in ["frontend", "backend"]:
-        devs = expected_devs[repo]
-        dev_entries = grouped[repo]
-        # Prepare data for mailer
-        dev1 = dev_entries[devs[0]]
-        dev2 = dev_entries[devs[1]]
-        receivers = frontend_receivers if repo == "frontend" else backend_receivers
-        mailer = DailyReportMailer(repo, sender, receivers, app_password)
-        mailer.send_report(
-            dev1_accomplishments=dev1['accomplishments'],
-            dev2_accomplishments=dev2['accomplishments'],
-            dev1_plans=dev1['plans'],
-            dev2_plans=dev2['plans'],
-            dev1_blockers=dev1['blockers'],
-            dev2_blockers=dev2['blockers'],
-            dev1_notes=dev1['notes'],
-            dev2_notes=dev2['notes'],
-            attachments=[]
-        )
-        if MOCK_MODE != "False":
-            print(f"\n--- MOCK REPORT for {repo.upper()} ---")
-            print(f"{devs[0]}: {dev1}")
-            print(f"{devs[1]}: {dev2}")
+    # Activity + Sheets fallback
+    print("[2/6] Fetching GitHub activity...", flush=True)
+    activity = normalize_activity_by_developer(repos, expected_devs, start_iso, end_iso)
+    if skip_sheets:
+        print("[3/6] Skipping Google Sheets fallback (NO_SHEETS=True)", flush=True)
+        fallback = {"frontend": {}, "backend": {}}
+    else:
+        print("[3/6] Reading Google Sheets fallback...", flush=True)
+        try:
+            sh = open_spreadsheet(os.getenv("SHEET_ID", SPREADSHEET_ID), CREDS_PATH)
+            fallback = build_sheet_fallback_by_repo_and_dev(sh, expected_devs)
+        except Exception as e:
+            print(f"Sheets fallback failed: {e}", flush=True)
+            fallback = {"frontend": {}, "backend": {}}
+    merged = merge_with_sheet_fallback(activity, fallback)
+
+    print("[4/6] Building emails...", flush=True)
+    yag = None if no_send else yagmail.SMTP(sender, app_password)
+
+    # Frontend email
+    subj_f, body_f = build_daily_report_email_for_repo("frontend", merged.get("frontend", {}), label_date)
+
+    if no_send:
+        print(f"[5/6] Would send Frontend email to: {frontend_receivers}", flush=True)
+    else:
+        if frontend_receivers:
+            print("[5/6] Sending Frontend email...", flush=True)
+            yag.send(frontend_receivers, subj_f, [body_f])
+
+    # Backend email
+    subj_b, body_b = build_daily_report_email_for_repo("backend", merged.get("backend", {}), label_date)
+    if no_send:
+        print(f"[6/6] Would send Backend email to: {backend_receivers}", flush=True)
+    else:
+        if backend_receivers:
+            print("[6/6] Sending Backend email...", flush=True)
+            yag.send(backend_receivers, subj_b, [body_b])
+    print("Done.", flush=True)
 
 if __name__ == "__main__":
     main()

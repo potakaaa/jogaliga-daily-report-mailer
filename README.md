@@ -42,6 +42,54 @@ This script automatically generates and sends daily reports for the Jogaliga fro
   - Google Service Account credentials
   - Email credentials
   - Developer names and emails
+  - GitHub Personal Access Token `GITHUB_TOKEN` (read-only repo scope)
+
+### Environment variables
+
+- Copy `docs/.env.example` to `.env` and fill in values locally, or set them as CI secrets in GitHub Actions.
+- `GITHUB_TOKEN` is required for reading PRs and issues across `jogaliga/frontend` and `jogaliga/backend`.
+  - Optional:
+    - `FRONTEND_REPO` (default `AppArara/jogaliga_frontend`)
+    - `BACKEND_REPO` (default `AppArara/jogaliga_backend`)
+
+### GitHub Actions setup
+
+- Secrets to add in the repo (Settings → Secrets and variables → Actions):
+  - `GITHUB_TOKEN` — PAT with read access to both repos
+  - `SENDER_EMAIL`, `GMAIL_APP_PASSWORD`, `RECEIVER_EMAIL` — for email sending
+  - `GOOGLE_SERVICE_ACCOUNT_JSON` — contents of your service account JSON
+- The workflow `.github/workflows/daily-report.yml` runs daily at 23:59 Asia/Manila.
+- You can also trigger it manually via the Actions tab (workflow_dispatch).
+
+### Manual run (local)
+
+```bash
+source venv/bin/activate
+python - <<'PY'
+from jogaliga_daily_report_mailer import render_daily_report_dry_run
+print(render_daily_report_dry_run())
+PY
+```
+
+Manual mock email run:
+
+```bash
+export MANUAL_MOCK=True
+export MOCK_RECEIVER_EMAIL=you@example.com
+python jogaliga_daily_report_mailer.py
+```
+
+See `docs/manual_run.md` for a complete manual run guide.
+
+### Troubleshooting
+
+- Ensure the service account has access to the target Google Sheet.
+- Check rate limits for GitHub API if results look incomplete.
+- No secrets are printed in logs by design; verify env is loaded if values seem missing.
+
+### Future enhancement
+
+- Optional `--since YYYY-MM-DD` flag for backfilling a previous date range.
 
 ## Troubleshooting
 
