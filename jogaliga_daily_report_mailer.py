@@ -474,6 +474,24 @@ def send_error_email(sender: str, app_password: str, receiver: str, message: str
     except Exception:
         pass
 
+
+def _env_flag_true(var_name: str, default: bool = False) -> bool:
+    """Return True if env var is a truthy value.
+
+    Truthy values: '1', 'true', 'yes', 'on' (case-insensitive).
+    Falsy values: '0', 'false', 'no', 'off', '' (case-insensitive) or unset.
+    """
+    raw = os.getenv(var_name)
+    if raw is None:
+        return default
+    val = raw.strip().lower()
+    if val in ("1", "true", "yes", "on"):  # Truthy
+        return True
+    if val in ("0", "false", "no", "off", ""):  # Falsy
+        return False
+    # Fallback: non-empty defaults to True
+    return True
+
 def group_reports_by_repo_and_developer(responses, expected_devs):
     grouped = defaultdict(dict)
     for row in responses:
@@ -869,8 +887,9 @@ def main():
     CREDS_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "jogaliga-daily-report-652c86c83d3f.json")
     sender = os.getenv("SENDER_EMAIL")
     app_password = os.getenv("GMAIL_APP_PASSWORD")
-    no_send = os.getenv("NO_SEND", "False") != "False"
-    skip_sheets = os.getenv("NO_SHEETS", "False") != "False"
+    # Robust boolean env flags
+    no_send = _env_flag_true("NO_SEND", default=False)
+    skip_sheets = _env_flag_true("NO_SHEETS", default=False)
 
     def compute_receivers(repo_key: str) -> list:
         base = [os.getenv("RECEIVER_EMAIL")]
@@ -880,9 +899,10 @@ def main():
             base.append(os.getenv("HANS_EMAIL"))
         manual_mock = os.getenv("MANUAL_MOCK", "False")
         mock_addr = (os.getenv("MOCK_RECEIVER_EMAIL") or "").strip()
-        if manual_mock != "False" and mock_addr:
+        # Treat MANUAL_MOCK via robust boolean evaluation as well
+        if _env_flag_true("MANUAL_MOCK", default=False) and mock_addr:
             return [mock_addr]
-        if os.getenv("MOCK_MODE", "False") != "False" and mock_addr:
+        if _env_flag_true("MOCK_MODE", default=False) and mock_addr:
             print("MOCK_MODE enabled; using MOCK_RECEIVER_EMAIL")
             return [mock_addr]
         return base
