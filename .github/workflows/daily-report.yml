@@ -4,11 +4,46 @@ on:
   schedule:
     # 23:59 Asia/Manila = 15:59 UTC
     - cron: '59 15 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      no_send:
+        description: "Don't send emails (test run only)"
+        required: false
+        default: 'true'
+      mock_receiver_email:
+        description: "Override recipient for this run (optional)"
+        required: false
+        default: ''
 
 jobs:
   report:
     runs-on: ubuntu-latest
+    env:
+      # File path where we will write the service account JSON
+      GOOGLE_SERVICE_ACCOUNT_JSON: jogaliga-service-account.json
+      # Secrets
+      SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+      RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Repository variables (configure in Settings > Secrets and variables > Actions > Variables)
+      FRONTEND_REPO: ${{ vars.FRONTEND_REPO }}
+      BACKEND_REPO: ${{ vars.BACKEND_REPO }}
+      DEV1_NAME_FRONTEND: ${{ vars.DEV1_NAME_FRONTEND }}
+      DEV2_NAME_FRONTEND: ${{ vars.DEV2_NAME_FRONTEND }}
+      DEV1_NAME_BACKEND: ${{ vars.DEV1_NAME_BACKEND }}
+      DEV2_NAME_BACKEND: ${{ vars.DEV2_NAME_BACKEND }}
+      DEV1_GH_FRONTEND: ${{ vars.DEV1_GH_FRONTEND }}
+      DEV2_GH_FRONTEND: ${{ vars.DEV2_GH_FRONTEND }}
+      DEV1_GH_BACKEND: ${{ vars.DEV1_GH_BACKEND }}
+      DEV2_GH_BACKEND: ${{ vars.DEV2_GH_BACKEND }}
+      SHEET_ID: ${{ vars.SHEET_ID }}
+      # Toggle sheets/GH behavior
+      NO_SHEETS: 'False'
+      # Turn off send by default for manual runs; can be overridden by input
+      NO_SEND: ${{ github.event.inputs.no_send || 'true' }}
+      MANUAL_MOCK: ${{ github.event.inputs.mock_receiver_email != '' && 'True' || 'False' }}
+      MOCK_RECEIVER_EMAIL: ${{ github.event.inputs.mock_receiver_email }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,32 +56,20 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests gspread google-auth yagmail python-dotenv pytest pytest-xdist
+          pip install requests gspread google-auth google-auth-oauthlib yagmail python-dotenv pytest pytest-xdist
 
       - name: Write Google service account JSON
         if: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON != '' }}
         run: |
-          echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}" > jogaliga-service-account.json
+          echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}" > "${GOOGLE_SERVICE_ACCOUNT_JSON}"
         shell: bash
 
       - name: Run tests
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: jogaliga-service-account.json
         run: |
           pytest -n auto -q
 
-      - name: Dry-run render (HTML output)
-        env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: jogaliga-service-account.json
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+      - name: Run daily report script
         run: |
-          python - <<'PY'
-from jogaliga_daily_report_mailer import render_daily_report_dry_run
-html = render_daily_report_dry_run()
-print(html)
-PY
+          python jogaliga_daily_report_mailer.py
 
 
