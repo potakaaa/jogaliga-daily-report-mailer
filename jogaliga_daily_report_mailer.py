@@ -64,6 +64,26 @@ class DailyReportMailer:
         label_date = prev_day.strftime('%B %d, %Y')
         return start_utc, end_utc, label_date
 
+    @staticmethod
+    def today_window_asia_manila() -> tuple:
+        """Return (start_iso_utc, end_iso_utc, label_date) for the current calendar day in Asia/Manila.
+
+        - Matches activities for "today" when the script runs, e.g., 11:59 PM still uses today's date.
+        - start/end returned as ISO8601 UTC timestamps suitable for GitHub API query parameters.
+        - label_date returned as a human-readable date string in Asia/Manila.
+        """
+        tz = ZoneInfo("Asia/Manila")
+        now_ph = datetime.datetime.now(tz)
+        curr_day = now_ph.date()
+        start_ph = datetime.datetime.combine(curr_day, datetime.time(0, 0, 0), tzinfo=tz)
+        end_ph = datetime.datetime.combine(curr_day, datetime.time(23, 59, 59), tzinfo=tz)
+        start_utc_dt = start_ph.astimezone(ZoneInfo("UTC"))
+        end_utc_dt = end_ph.astimezone(ZoneInfo("UTC"))
+        start_utc = start_utc_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+        end_utc = end_utc_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+        label_date = curr_day.strftime('%B %d, %Y')
+        return start_utc, end_utc, label_date
+
     def send_report(self, dev1_accomplishments: str = "", dev2_accomplishments: str = "",
                    dev1_plans: str = "", dev2_plans: str = "",
                    dev1_blockers: str = "", dev2_blockers: str = "",
@@ -258,15 +278,27 @@ def filter_rows_by_previous_day_ph(rows: list) -> list:
     return out
 
 
+def filter_rows_by_today_ph(rows: list) -> list:
+    """Return only rows whose date equals today's date in Asia/Manila."""
+    tz = ZoneInfo("Asia/Manila")
+    today = datetime.datetime.now(tz).date()
+    out = []
+    for r in rows:
+        d = _parse_date_to_ph_date(str(r.get("date", "")))
+        if d == today:
+            out.append(r)
+    return out
+
+
 def build_sheet_fallback_by_repo_and_dev(sh, expected_devs: dict) -> dict:
-    """Return fallback structure from sheets for the previous PH day.
+    """Return fallback structure from sheets for today's PH date.
 
     {repo: {developer: {accomplishments, blockers, notes}}}
     """
     ws_map = get_worksheets_map(sh)
-    acc = filter_rows_by_previous_day_ph(parse_accomplishments_tab(ws_map.get("Today’s Accomplishments") or ws_map.get("Today's Accomplishments") or ws_map.get("Accomplishments") or ws_map.get("Today Accomplishments") or sh.sheet1))
-    blk = filter_rows_by_previous_day_ph(parse_blockers_tab(ws_map.get("Blockers") or ws_map.get("Blockers & Questions") or sh.sheet1))
-    nts = filter_rows_by_previous_day_ph(parse_notes_tab(ws_map.get("Notes") or sh.sheet1))
+    acc = filter_rows_by_today_ph(parse_accomplishments_tab(ws_map.get("Today’s Accomplishments") or ws_map.get("Today's Accomplishments") or ws_map.get("Accomplishments") or ws_map.get("Today Accomplishments") or sh.sheet1))
+    blk = filter_rows_by_today_ph(parse_blockers_tab(ws_map.get("Blockers") or ws_map.get("Blockers & Questions") or sh.sheet1))
+    nts = filter_rows_by_today_ph(parse_notes_tab(ws_map.get("Notes") or sh.sheet1))
 
     def repo_for_dev(dev_name: str) -> str:
         for repo_key, devs in expected_devs.items():
@@ -848,7 +880,7 @@ def main():
 
     # GitHub activity window and repos
     print("[1/6] Calculating window...", flush=True)
-    start_iso, end_iso, label_date = DailyReportMailer.previous_day_window_asia_manila()
+    start_iso, end_iso, label_date = DailyReportMailer.today_window_asia_manila()
     # Resolve repo slugs from env (owner/repo). Defaults to AppArara slugs provided.
     frontend_slug = os.getenv("FRONTEND_REPO", "AppArara/jogaliga_frontend")
     backend_slug = os.getenv("BACKEND_REPO", "AppArara/jogaliga_backend")

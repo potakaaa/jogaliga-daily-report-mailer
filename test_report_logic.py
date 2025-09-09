@@ -5,13 +5,11 @@ from zoneinfo import ZoneInfo
 import importlib
 
 
-def test_previous_day_window_asia_manila():
+def test_today_window_asia_manila():
     mod = importlib.import_module("jogaliga_daily_report_mailer")
-    start, end, label = mod.DailyReportMailer.previous_day_window_asia_manila()
-    # Basic sanity checks
+    start, end, label = mod.DailyReportMailer.today_window_asia_manila()
     assert start.endswith("Z") or "+" in start
     assert end.endswith("Z") or "+" in end
-    # Parse and ensure start < end and both on same PH date
     s = datetime.datetime.fromisoformat(start.replace("Z", "+00:00"))
     e = datetime.datetime.fromisoformat(end.replace("Z", "+00:00"))
     assert s < e
@@ -19,8 +17,7 @@ def test_previous_day_window_asia_manila():
     s_ph = s.astimezone(ph)
     e_ph = e.astimezone(ph)
     assert s_ph.date() == e_ph.date()
-    # Label matches previous day in PH
-    expected_label = (datetime.datetime.now(ph).date() - datetime.timedelta(days=1)).strftime('%B %d, %Y')
+    expected_label = (datetime.datetime.now(ph).date()).strftime('%B %d, %Y')
     assert label == expected_label
 
 
