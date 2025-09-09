@@ -4,7 +4,7 @@ on:
   schedule:
     # 23:59 Asia/Manila = 15:59 UTC
     - cron: '59 15 * * *'
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 jobs:
   report:
