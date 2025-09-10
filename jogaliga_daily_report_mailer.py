@@ -999,6 +999,7 @@ def main():
             fallback = build_sheet_fallback_by_repo_and_dev(sh, expected_devs)
         except Exception as e:
             print(f"Sheets fallback failed: {e}", flush=True)
+            print("Continuing with GitHub activity only...", flush=True)
             fallback = {"frontend": {}, "backend": {}}
     merged = merge_with_sheet_fallback(activity, fallback)
 
