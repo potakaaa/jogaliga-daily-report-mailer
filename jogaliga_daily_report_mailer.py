@@ -85,6 +85,56 @@ class DailyReportMailer:
         label_date = curr_day.strftime('%B %d, %Y')
         return start_utc, end_utc, label_date
 
+    @staticmethod
+    def custom_date_window_asia_manila(date_str: str) -> tuple:
+        """Return (start_iso_utc, end_iso_utc, label_date) for a custom date in Asia/Manila.
+
+        Supports multiple date formats:
+        - "Sep 9" or "September 9" (current year assumed)
+        - "Sep 9, 2024" or "September 9, 2024" (with year)
+        - "2024-09-09" (ISO format)
+        - "09/09/2024" (MM/DD/YYYY)
+
+        - start/end returned as ISO8601 UTC timestamps suitable for GitHub API query parameters.
+        - label_date returned as a human-readable date string in Asia/Manila.
+        """
+        tz = ZoneInfo("Asia/Manila")
+        current_year = datetime.datetime.now(tz).year
+        
+        # Try multiple date formats
+        date_formats = [
+            "%b %d",           # Sep 9
+            "%B %d",           # September 9
+            "%b %d, %Y",       # Sep 9, 2024
+            "%B %d, %Y",       # September 9, 2024
+            "%Y-%m-%d",        # 2024-09-09
+            "%m/%d/%Y",        # 09/09/2024
+            "%d/%m/%Y",        # 09/09/2024 (alternative)
+        ]
+        
+        parsed_date = None
+        for fmt in date_formats:
+            try:
+                parsed_date = datetime.datetime.strptime(date_str.strip(), fmt).date()
+                # If no year in format, use current year
+                if fmt in ["%b %d", "%B %d"]:
+                    parsed_date = parsed_date.replace(year=current_year)
+                break
+            except ValueError:
+                continue
+        
+        if parsed_date is None:
+            raise ValueError(f"Unable to parse date: {date_str}. Supported formats: 'Sep 9', 'September 9, 2024', '2024-09-09', '09/09/2024'")
+        
+        start_ph = datetime.datetime.combine(parsed_date, datetime.time(0, 0, 0), tzinfo=tz)
+        end_ph = datetime.datetime.combine(parsed_date, datetime.time(23, 59, 59), tzinfo=tz)
+        start_utc_dt = start_ph.astimezone(ZoneInfo("UTC"))
+        end_utc_dt = end_ph.astimezone(ZoneInfo("UTC"))
+        start_utc = start_utc_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+        end_utc = end_utc_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+        label_date = parsed_date.strftime('%B %d, %Y')
+        return start_utc, end_utc, label_date
+
     def send_report(self, dev1_accomplishments: str = "", dev2_accomplishments: str = "", dev3_accomplishments: str = "",
                    dev1_plans: str = "", dev2_plans: str = "", dev3_plans: str = "",
                    dev1_blockers: str = "", dev2_blockers: str = "", dev3_blockers: str = "",
@@ -917,7 +967,17 @@ def main():
 
     # GitHub activity window and repos
     print("[1/6] Calculating window...", flush=True)
-    start_iso, end_iso, label_date = DailyReportMailer.today_window_asia_manila()
+    custom_date = os.getenv("CUSTOM_DATE", "").strip()
+    if custom_date:
+        try:
+            start_iso, end_iso, label_date = DailyReportMailer.custom_date_window_asia_manila(custom_date)
+            print(f"Using custom date: {label_date}", flush=True)
+        except ValueError as e:
+            print(f"Error parsing custom date '{custom_date}': {e}", flush=True)
+            print("Falling back to today's date", flush=True)
+            start_iso, end_iso, label_date = DailyReportMailer.today_window_asia_manila()
+    else:
+        start_iso, end_iso, label_date = DailyReportMailer.today_window_asia_manila()
     # Resolve repo slugs from env (owner/repo). Defaults to AppArara slugs provided.
     frontend_slug = os.getenv("FRONTEND_REPO", "AppArara/jogaliga_frontend")
     backend_slug = os.getenv("BACKEND_REPO", "AppArara/jogaliga_backend")

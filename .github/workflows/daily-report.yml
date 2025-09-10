@@ -9,7 +9,12 @@ on:
       no_send:
         description: "Don't send emails (test run only)"
         required: false
-        default: 'true'
+        type: boolean
+        default: true
+      custom_date:
+        description: "Custom date for report (e.g., 'Sep 9', 'September 9, 2024', '2024-09-09')"
+        required: false
+        default: ''
       mock_receiver_email:
         description: "Override recipient for this run (optional)"
         required: false
@@ -42,6 +47,7 @@ jobs:
       NO_SHEETS: 'False'
       # Turn off send by default for manual runs; can be overridden by input
       NO_SEND: ${{ github.event.inputs.no_send || 'true' }}
+      CUSTOM_DATE: ${{ github.event.inputs.custom_date }}
       MANUAL_MOCK: ${{ github.event.inputs.mock_receiver_email != '' && 'True' || 'False' }}
       MOCK_RECEIVER_EMAIL: ${{ github.event.inputs.mock_receiver_email }}
     steps:
