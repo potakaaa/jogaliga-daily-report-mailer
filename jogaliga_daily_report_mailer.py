@@ -451,8 +451,14 @@ def _html_list(items: list) -> str:
         title = it.get("title", "")
         url = it.get("html_url", "")
         number = it.get("number")
+        description = it.get("description", "")
         label = f"#{number} {title}" if number is not None else title
         line = f"<a href=\"{url}\" style=\"text-decoration:none;color:#111\">{label}</a>"
+
+        # Add description as sub-bullet if available
+        if description:
+            line += f"<br><span style=\"margin-left:15px;color:#666;font-size:14px;\">• {description}</span>"
+
         li.append(f"<li style=\"margin:4px 0;\">{line}</li>")
     return _html_h3_block('<ul style="margin:0 0 10px 20px;">' + "".join(li) + "</ul>")
 
@@ -641,10 +647,47 @@ def _safe_get(url: str, headers: dict, params: dict) -> dict:
         print(f"GitHub API GET {url} exception: {exc}")
         return {}
 
+
+def _extract_pr_description(body: str) -> str:
+    """Extract the first sentence after '## 📝 Description' from PR body.
+
+    Returns the first sentence or empty string if not found.
+    """
+    if not body:
+        return ""
+
+    # Find the Description section
+    desc_marker = "## 📝 Description"
+    desc_start = body.find(desc_marker)
+
+    if desc_start == -1:
+        return ""
+
+    # Extract text after the Description header
+    desc_text = body[desc_start + len(desc_marker):].strip()
+
+    # Look for the next section header (##) to limit the scope
+    next_section = desc_text.find("## ")
+    if next_section != -1:
+        desc_text = desc_text[:next_section].strip()
+
+    # Split into sentences and get the first one
+    import re
+    sentences = re.split(r'(?<=[.!?])\s+', desc_text.strip())
+
+    if sentences and sentences[0].strip():
+        # Clean up the sentence (remove extra whitespace, bullet points, etc.)
+        first_sentence = sentences[0].strip()
+        # Remove common prefixes like bullet points
+        first_sentence = re.sub(r'^[-•*]\s*', '', first_sentence)
+        return first_sentence
+
+    return ""
+
 def fetch_prs_opened(owner: str, repo: str, start_iso_utc: str, end_iso_utc: str) -> list:
     """Fetch PRs opened within [start, end] using GitHub search API.
 
-    Returns list of dicts: {number, title, html_url, author, created_at}
+    Returns list of dicts: {number, title, html_url, author, created_at, description}
     """
     date_range = _search_date_range(start_iso_utc, end_iso_utc)
     query = f"repo:{owner}/{repo} is:pr created:{date_range}"
@@ -658,12 +701,15 @@ def fetch_prs_opened(owner: str, repo: str, start_iso_utc: str, end_iso_utc: str
         data = _safe_get(url, headers, params) or {}
         items = data.get("items", [])
         for it in items:
+            body = it.get("body", "")
+            description = _extract_pr_description(body)
             results.append({
                 "number": it.get("number"),
                 "title": it.get("title", ""),
                 "html_url": it.get("html_url", ""),
                 "author": (it.get("user") or {}).get("login", ""),
                 "created_at": it.get("created_at", ""),
+                "description": description,
             })
         if len(items) < per_page:
             break
@@ -682,7 +728,7 @@ def fetch_prs_opened_for_repos(repos: list, start_iso_utc: str, end_iso_utc: str
 def fetch_prs_merged(owner: str, repo: str, start_iso_utc: str, end_iso_utc: str) -> list:
     """Fetch PRs merged within [start, end] using GitHub search API.
 
-    Returns list of dicts: {number, title, html_url, author, merged_at}
+    Returns list of dicts: {number, title, html_url, author, merged_at, description}
     """
     date_range = _search_date_range(start_iso_utc, end_iso_utc)
     query = f"repo:{owner}/{repo} is:pr is:merged merged:{date_range}"
@@ -696,12 +742,15 @@ def fetch_prs_merged(owner: str, repo: str, start_iso_utc: str, end_iso_utc: str
         data = _safe_get(url, headers, params) or {}
         items = data.get("items", [])
         for it in items:
+            body = it.get("body", "")
+            description = _extract_pr_description(body)
             results.append({
                 "number": it.get("number"),
                 "title": it.get("title", ""),
                 "html_url": it.get("html_url", ""),
                 "author": (it.get("user") or {}).get("login", ""),
                 "merged_at": it.get("closed_at", ""),
+                "description": description,
             })
         if len(items) < per_page:
             break
