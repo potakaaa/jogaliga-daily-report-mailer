@@ -701,6 +701,9 @@ def fetch_prs_opened(owner: str, repo: str, start_iso_utc: str, end_iso_utc: str
         data = _safe_get(url, headers, params) or {}
         items = data.get("items", [])
         for it in items:
+            # Strictly enforce the PH-day window using exact timestamps
+            if not _iso_in_window(it.get("created_at", ""), start_iso_utc, end_iso_utc):
+                continue
             body = it.get("body", "")
             description = _extract_pr_description(body)
             results.append({
@@ -742,6 +745,10 @@ def fetch_prs_merged(owner: str, repo: str, start_iso_utc: str, end_iso_utc: str
         data = _safe_get(url, headers, params) or {}
         items = data.get("items", [])
         for it in items:
+            # Enforce PH-day window using closed_at (which reflects merge time for merged PRs in Search API)
+            merged_ts = it.get("closed_at", "")
+            if not _iso_in_window(merged_ts, start_iso_utc, end_iso_utc):
+                continue
             body = it.get("body", "")
             description = _extract_pr_description(body)
             results.append({
