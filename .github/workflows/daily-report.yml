@@ -3,7 +3,7 @@ name: Daily Report
 on:
   schedule:
     # 23:59 Asia/Manila = 15:59 UTC
-    - cron: '59 15 * * *'
+    - cron: "59 15 * * *"
   workflow_dispatch:
     inputs:
       no_send:
@@ -14,11 +14,11 @@ on:
       custom_date:
         description: "Custom date for report (e.g., 'Sep 9', 'September 9, 2024', '2024-09-09')"
         required: false
-        default: ''
+        default: ""
       mock_receiver_email:
         description: "Override recipient for this run (optional)"
         required: false
-        default: ''
+        default: ""
 
 jobs:
   report:
@@ -44,9 +44,11 @@ jobs:
       DEV2_GH_BACKEND: ${{ vars.DEV2_GH_BACKEND }}
       SHEET_ID: ${{ vars.SHEET_ID }}
       # Toggle sheets/GH behavior
-      NO_SHEETS: 'False'
+      NO_SHEETS: "False"
       # Turn off send by default for manual runs; can be overridden by input
       NO_SEND: ${{ github.event.inputs.no_send || 'true' }}
+      # Disable mock mode for scheduled runs to ensure real emails are sent
+      MOCK_MODE: "False"
       CUSTOM_DATE: ${{ github.event.inputs.custom_date }}
       MANUAL_MOCK: ${{ github.event.inputs.mock_receiver_email != '' && 'True' || 'False' }}
       MOCK_RECEIVER_EMAIL: ${{ github.event.inputs.mock_receiver_email }}
@@ -57,7 +59,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: "3.9"
 
       - name: Install dependencies
         run: |
@@ -78,5 +80,3 @@ jobs:
       - name: Run daily report script
         run: |
           python jogaliga_daily_report_mailer.py
-
-
