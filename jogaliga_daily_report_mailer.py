@@ -1063,7 +1063,14 @@ def main():
     else:
         if frontend_receivers:
             print("[5/6] Sending Frontend email...", flush=True)
-            yag.send(frontend_receivers, subj_f, [body_f])
+            try:
+                yag.send(frontend_receivers, subj_f, [body_f])
+                print("Frontend email sent successfully!", flush=True)
+            except Exception as e:
+                print(f"Failed to send Frontend email: {e}", flush=True)
+                # Don't exit on email failure - continue with backend email
+                if "authentication" in str(e).lower():
+                    print("This appears to be an authentication issue. Check your Gmail app password and account settings.", flush=True)
 
     # Backend email
     subj_b, body_b = build_daily_report_email_for_repo("backend", merged.get("backend", {}), label_date)
@@ -1072,7 +1079,14 @@ def main():
     else:
         if backend_receivers:
             print("[6/6] Sending Backend email...", flush=True)
-            yag.send(backend_receivers, subj_b, [body_b])
+            try:
+                yag.send(backend_receivers, subj_b, [body_b])
+                print("Backend email sent successfully!", flush=True)
+            except Exception as e:
+                print(f"Failed to send Backend email: {e}", flush=True)
+                if "authentication" in str(e).lower():
+                    print("This appears to be an authentication issue. Check your Gmail app password and account settings.", flush=True)
+
     print("Done.", flush=True)
 
 if __name__ == "__main__":

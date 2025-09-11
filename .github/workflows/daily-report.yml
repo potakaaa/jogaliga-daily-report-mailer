@@ -45,8 +45,9 @@ jobs:
       SHEET_ID: ${{ vars.SHEET_ID }}
       # Toggle sheets/GH behavior
       NO_SHEETS: "False"
-      # Turn off send by default for manual runs; can be overridden by input
-      NO_SEND: ${{ github.event.inputs.no_send || 'true' }}
+      # For manual runs: default to no send (can be overridden)
+      # For scheduled runs: always send emails
+      NO_SEND: ${{ github.event_name == 'schedule' && 'false' || (github.event.inputs.no_send || 'true') }}
       # Disable mock mode for scheduled runs to ensure real emails are sent
       MOCK_MODE: "False"
       CUSTOM_DATE: ${{ github.event.inputs.custom_date }}
