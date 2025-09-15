@@ -2,8 +2,8 @@ name: Daily Report
 
 on:
   schedule:
-    # 23:59 Asia/Manila = 15:59 UTC
-    - cron: "59 15 * * *"
+    # 00:10 Asia/Manila = 16:10 UTC (previous day)
+    - cron: "10 16 * * *"
   workflow_dispatch:
     inputs:
       no_send:

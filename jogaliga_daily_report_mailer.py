@@ -345,27 +345,40 @@ def filter_rows_by_previous_day_ph(rows: list) -> list:
     return out
 
 
-def filter_rows_by_today_ph(rows: list) -> list:
-    """Return only rows whose date equals today's date in Asia/Manila."""
-    tz = ZoneInfo("Asia/Manila")
-    today = datetime.datetime.now(tz).date()
+def filter_rows_by_date_ph(rows: list, target_date: datetime.date) -> list:
+    """Return only rows whose date equals target_date in Asia/Manila."""
     out = []
     for r in rows:
         d = _parse_date_to_ph_date(str(r.get("date", "")))
-        if d == today:
+        if d == target_date:
             out.append(r)
     return out
 
 
-def build_sheet_fallback_by_repo_and_dev(sh, expected_devs: dict) -> dict:
-    """Return fallback structure from sheets for today's PH date.
+def build_sheet_fallback_by_repo_and_dev(sh, expected_devs: dict, target_date: datetime.date) -> dict:
+    """Return fallback structure from sheets for target PH date.
 
     {repo: {developer: {accomplishments, blockers, notes}}}
     """
     ws_map = get_worksheets_map(sh)
-    acc = filter_rows_by_today_ph(parse_accomplishments_tab(ws_map.get("Today’s Accomplishments") or ws_map.get("Today's Accomplishments") or ws_map.get("Accomplishments") or ws_map.get("Today Accomplishments") or sh.sheet1))
-    blk = filter_rows_by_today_ph(parse_blockers_tab(ws_map.get("Blockers") or ws_map.get("Blockers & Questions") or sh.sheet1))
-    nts = filter_rows_by_today_ph(parse_notes_tab(ws_map.get("Notes") or sh.sheet1))
+    acc = filter_rows_by_date_ph(
+        parse_accomplishments_tab(
+            ws_map.get("Today’s Accomplishments")
+            or ws_map.get("Today's Accomplishments")
+            or ws_map.get("Accomplishments")
+            or ws_map.get("Today Accomplishments")
+            or sh.sheet1
+        ),
+        target_date,
+    )
+    blk = filter_rows_by_date_ph(
+        parse_blockers_tab(ws_map.get("Blockers") or ws_map.get("Blockers & Questions") or sh.sheet1),
+        target_date,
+    )
+    nts = filter_rows_by_date_ph(
+        parse_notes_tab(ws_map.get("Notes") or sh.sheet1),
+        target_date,
+    )
 
     def repo_for_dev(dev_name: str) -> str:
         for repo_key, devs in expected_devs.items():
@@ -1030,10 +1043,11 @@ def main():
             print(f"Using custom date: {label_date}", flush=True)
         except ValueError as e:
             print(f"Error parsing custom date '{custom_date}': {e}", flush=True)
-            print("Falling back to today's date", flush=True)
-            start_iso, end_iso, label_date = DailyReportMailer.today_window_asia_manila()
+            print("Falling back to previous day's date", flush=True)
+            start_iso, end_iso, label_date = DailyReportMailer.previous_day_window_asia_manila()
     else:
-        start_iso, end_iso, label_date = DailyReportMailer.today_window_asia_manila()
+        # Default to previous day window so a 00:10 run sends yesterday's report
+        start_iso, end_iso, label_date = DailyReportMailer.previous_day_window_asia_manila()
     # Resolve repo slugs from env (owner/repo). Defaults to AppArara slugs provided.
     frontend_slug = os.getenv("FRONTEND_REPO", "AppArara/jogaliga_frontend")
     backend_slug = os.getenv("BACKEND_REPO", "AppArara/jogaliga_backend")
@@ -1052,7 +1066,11 @@ def main():
         print("[3/6] Reading Google Sheets fallback...", flush=True)
         try:
             sh = open_spreadsheet(os.getenv("SHEET_ID", SPREADSHEET_ID), CREDS_PATH)
-            fallback = build_sheet_fallback_by_repo_and_dev(sh, expected_devs)
+            # Use the same labeled date as the report (Asia/Manila previous or custom)
+            # Parse label_date back to a date object in Asia/Manila
+            tz = ZoneInfo("Asia/Manila")
+            target_date = datetime.datetime.strptime(label_date, '%B %d, %Y').date()
+            fallback = build_sheet_fallback_by_repo_and_dev(sh, expected_devs, target_date)
         except Exception as e:
             print(f"Sheets fallback failed: {e}", flush=True)
             print("Continuing with GitHub activity only...", flush=True)
